@@ -2,8 +2,7 @@ import { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
 import { Search, Download, Video, Music, AlertCircle, CheckCircle2 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:4000';
-const socket = io(API_BASE);
+const socket = io('http://localhost:4000');
 
 function App() {
   const [url, setUrl] = useState('');
@@ -11,39 +10,37 @@ function App() {
   const [videoInfo, setVideoInfo] = useState(null);
   const [error, setError] = useState('');
   const [format, setFormat] = useState('mp4');
+  const [downloadPath, setDownloadPath] = useState('');
   
   // Download state
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadLog, setDownloadLog] = useState('');
-  const [downloadStatus, setDownloadStatus] = useState(''); // 'downloading', 'ready', 'error'
-  const [readyDownloadId, setReadyDownloadId] = useState(null);
+  const [downloadStatus, setDownloadStatus] = useState(''); // 'downloading', 'completed', 'error'
 
   useEffect(() => {
     socket.on('download-started', (data) => {
       setDownloadStatus('downloading');
       setDownloadLog(data.status);
       setDownloadProgress(0);
-      setReadyDownloadId(null);
     });
 
     socket.on('download-progress', (data) => {
       setDownloadLog(data.log);
+      
+      // Attempt to extract percentage from yt-dlp log
+      // Format: [download]  25.0% of ...
       const match = data.log.match(/(\d+\.\d+)%/);
       if (match && match[1]) {
         setDownloadProgress(parseFloat(match[1]));
       }
     });
 
-    socket.on('download-ready', (data) => {
-      setDownloadStatus('ready');
+    socket.on('download-complete', () => {
+      setDownloadStatus('completed');
       setIsDownloading(false);
       setDownloadProgress(100);
-      setDownloadLog('Processing complete! Ready to save.');
-      setReadyDownloadId(data.id);
-      
-      // Auto-trigger browser download
-      window.location.href = `${API_BASE}/api/download/${data.id}`;
+      setDownloadLog('Download completed successfully!');
     });
 
     socket.on('download-error', (data) => {
@@ -55,7 +52,7 @@ function App() {
     return () => {
       socket.off('download-started');
       socket.off('download-progress');
-      socket.off('download-ready');
+      socket.off('download-complete');
       socket.off('download-error');
     };
   }, []);
@@ -69,10 +66,9 @@ function App() {
     setVideoInfo(null);
     setDownloadStatus('');
     setIsDownloading(false);
-    setReadyDownloadId(null);
 
     try {
-      const res = await fetch(`${API_BASE}/api/info`, {
+      const res = await fetch('http://localhost:4000/api/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
@@ -95,7 +91,7 @@ function App() {
   const handleDownload = () => {
     if (!videoInfo) return;
     setIsDownloading(true);
-    socket.emit('start-download', { url: videoInfo.webpage_url || url, format });
+    socket.emit('start-download', { url: videoInfo.webpage_url || url, format, customPath: downloadPath });
   };
 
   return (
@@ -145,54 +141,58 @@ function App() {
                 )}
               </div>
 
-              <div className="format-selection">
-                <button 
-                  className={`format-btn ${format === 'mp4' ? 'active' : ''}`}
-                  onClick={() => setFormat('mp4')}
+              <div className="format-selection" style={{ flexDirection: 'column' }}>
+                <div style={{ display: 'flex', gap: '1rem' }}>
+                  <button 
+                    className={`format-btn ${format === 'mp4' ? 'active' : ''}`}
+                    onClick={() => setFormat('mp4')}
+                    disabled={isDownloading}
+                  >
+                    <Video size={16} style={{ display: 'inline', marginRight: '0.5rem', verticalAlign: 'text-bottom' }} />
+                    MP4 Video
+                  </button>
+                  <button 
+                    className={`format-btn ${format === 'mp3' ? 'active' : ''}`}
+                    onClick={() => setFormat('mp3')}
+                    disabled={isDownloading}
+                  >
+                    <Music size={16} style={{ display: 'inline', marginRight: '0.5rem', verticalAlign: 'text-bottom' }} />
+                    MP3 Audio
+                  </button>
+                </div>
+                
+                <input
+                  type="text"
+                  className="input-field"
+                  placeholder="Custom download path (optional, e.g., C:\Downloads)"
+                  value={downloadPath}
+                  onChange={(e) => setDownloadPath(e.target.value)}
                   disabled={isDownloading}
-                >
-                  <Video size={16} style={{ display: 'inline', marginRight: '0.5rem', verticalAlign: 'text-bottom' }} />
-                  MP4 Video
-                </button>
-                <button 
-                  className={`format-btn ${format === 'mp3' ? 'active' : ''}`}
-                  onClick={() => setFormat('mp3')}
-                  disabled={isDownloading}
-                >
-                  <Music size={16} style={{ display: 'inline', marginRight: '0.5rem', verticalAlign: 'text-bottom' }} />
-                  MP3 Audio
-                </button>
+                  style={{ width: '100%', padding: '0.75rem 1rem', marginTop: '0.5rem' }}
+                />
               </div>
 
               <div className="download-controls">
-                {downloadStatus === 'ready' && readyDownloadId ? (
-                  <a 
-                    href={`${API_BASE}/api/download/${readyDownloadId}`} 
-                    className="btn" 
-                    style={{ width: '100%', justifyContent: 'center', backgroundColor: 'var(--success)', textDecoration: 'none' }}
-                  >
-                    <CheckCircle2 size={20} /> Save to Device
-                  </a>
-                ) : (
-                  <button 
-                    className="btn" 
-                    onClick={handleDownload} 
-                    disabled={isDownloading}
-                    style={{ width: '100%', justifyContent: 'center' }}
-                  >
-                    {isDownloading ? (
-                      'Processing on Server...'
-                    ) : (
-                      <><Download size={20} /> Download {format.toUpperCase()}</>
-                    )}
-                  </button>
-                )}
+                <button 
+                  className="btn" 
+                  onClick={handleDownload} 
+                  disabled={isDownloading || downloadStatus === 'completed'}
+                  style={{ width: '100%', justifyContent: 'center' }}
+                >
+                  {isDownloading ? (
+                    'Downloading...'
+                  ) : downloadStatus === 'completed' ? (
+                    <><CheckCircle2 size={20} /> Downloaded</>
+                  ) : (
+                    <><Download size={20} /> Download {format.toUpperCase()}</>
+                  )}
+                </button>
               </div>
 
               {(isDownloading || downloadStatus) && (
                 <div className="progress-container">
                   <div className="progress-header">
-                    <span>{downloadStatus === 'error' ? 'Error' : 'Server Progress'}</span>
+                    <span>{downloadStatus === 'error' ? 'Error' : 'Progress'}</span>
                     <span>{Math.round(downloadProgress)}%</span>
                   </div>
                   <div className="progress-bar-bg">
@@ -200,7 +200,7 @@ function App() {
                       className="progress-bar-fill" 
                       style={{ 
                         width: `${downloadProgress}%`,
-                        background: downloadStatus === 'error' ? 'var(--error)' : downloadStatus === 'ready' ? 'var(--success)' : ''
+                        background: downloadStatus === 'error' ? 'var(--error)' : downloadStatus === 'completed' ? 'var(--success)' : ''
                       }}
                     ></div>
                   </div>

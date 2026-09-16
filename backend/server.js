@@ -17,16 +17,20 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 4000;
-const TEMP_DIR = path.join(__dirname, 'temp');
+const PORT = 4000;
+const DOWNLOAD_DIR = path.join(__dirname, 'downloads');
 
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR);
+// Ensure downloads directory exists
+if (!fs.existsSync(DOWNLOAD_DIR)) {
+  fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 }
 
+// Endpoint to get video or playlist info
 app.post('/api/info', async (req, res) => {
   const { url } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL is required' });
+  if (!url) {
+    return res.status(400).json({ error: 'URL is required' });
+  }
 
   try {
     const info = await youtubedl(url, {
@@ -44,56 +48,36 @@ app.post('/api/info', async (req, res) => {
   }
 });
 
-app.get('/api/download/:id', (req, res) => {
-  const { id } = req.params;
-  const folderPath = path.join(TEMP_DIR, id);
-
-  if (!fs.existsSync(folderPath)) {
-    return res.status(404).send('File not found or expired.');
-  }
-
-  const files = fs.readdirSync(folderPath);
-  if (files.length === 0) {
-    return res.status(404).send('File not found.');
-  }
-
-  const file = files[0];
-  const filePath = path.join(folderPath, file);
-
-  res.download(filePath, file, (err) => {
-    if (err) {
-      console.error('Error sending file:', err);
-    }
-    // Delete file and folder after download completes or fails
-    try {
-      fs.unlinkSync(filePath);
-      fs.rmdirSync(folderPath);
-    } catch (cleanupErr) {
-      console.error('Error cleaning up temp files:', cleanupErr);
-    }
-  });
-});
-
 io.on('connection', (socket) => {
   console.log('A client connected:', socket.id);
 
   socket.on('start-download', async (data) => {
-    const { url, format } = data;
+    const { url, format, customPath } = data;
     const downloadId = Math.random().toString(36).substring(7);
-    const downloadFolderPath = path.join(TEMP_DIR, downloadId);
-    
-    fs.mkdirSync(downloadFolderPath, { recursive: true });
 
-    socket.emit('download-started', { id: downloadId, status: 'Starting download to server...' });
+    socket.emit('download-started', { id: downloadId, status: 'Starting download...' });
 
     try {
+      const targetDir = customPath || DOWNLOAD_DIR;
+      
+      // Ensure custom directory exists if provided, fallback to DOWNLOAD_DIR if it fails
+      let finalDir = targetDir;
+      try {
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+      } catch (err) {
+        console.error('Error creating custom path:', err);
+        finalDir = DOWNLOAD_DIR;
+      }
+
       const options = {
         noWarnings: true,
         noCallHome: true,
         noCheckCertificate: true,
         preferFreeFormats: true,
         youtubeSkipDashManifest: true,
-        paths: downloadFolderPath,
+        paths: finalDir,
         output: '%(title)s.%(ext)s'
       };
 
@@ -108,6 +92,7 @@ io.on('connection', (socket) => {
 
       downloader.stdout.on('data', (data) => {
         const text = data.toString();
+        // Try to parse yt-dlp progress string (e.g. "[download]  25.0% of 10.00MiB at 1.00MiB/s ETA 00:05")
         if (text.includes('[download]')) {
            socket.emit('download-progress', { id: downloadId, log: text.trim() });
         }
@@ -118,15 +103,7 @@ io.on('connection', (socket) => {
       });
 
       await downloader;
-      
-      // Auto-delete folder after 10 minutes if not downloaded
-      setTimeout(() => {
-        if (fs.existsSync(downloadFolderPath)) {
-           fs.rmSync(downloadFolderPath, { recursive: true, force: true });
-        }
-      }, 10 * 60 * 1000);
-
-      socket.emit('download-ready', { id: downloadId });
+      socket.emit('download-complete', { id: downloadId });
 
     } catch (error) {
       console.error('Download error:', error);
@@ -140,5 +117,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Backend server running on port ${PORT}`);
+  console.log(`Backend server running on http://localhost:${PORT}`);
 });
